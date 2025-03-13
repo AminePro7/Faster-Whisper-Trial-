@@ -5,48 +5,20 @@ import keyboard
 from faster_whisper import WhisperModel
 import requests
 import time
-import subprocess
 import os
-import pyttsx3
-from gtts import gTTS
-import playsound
-import langdetect  
-class OllamaManager:
-    @staticmethod
-    def restart_ollama():
-        try:
-            # Kill any existing Ollama process
-            if os.name == 'nt':  # Windows
-                subprocess.run(['taskkill', '/F', '/IM', 'ollama.exe'], 
-                             stdout=subprocess.PIPE, 
-                             stderr=subprocess.PIPE)
-            
-            print("\nStarting Ollama server...", flush=True)
-            time.sleep(2)
-            
-            if os.name == 'nt':
-                process = subprocess.Popen(
-                    ['ollama', 'serve'],
-                    creationflags=subprocess.CREATE_NEW_CONSOLE
-                )
-            
-            # Wait for server to be ready
-            max_retries = 5
-            for i in range(max_retries):
-                try:
-                    time.sleep(3)
-                    response = requests.get('http://localhost:11434/api/version', timeout=5)
-                    if response.status_code == 200:
-                        print("Ollama server is ready!", flush=True)
-                        return True
-                except:
-                    print(f"Waiting for server... (attempt {i+1}/{max_retries})", flush=True)
-            
-            return False
-            
-        except Exception as e:
-            print(f"Error starting Ollama: {str(e)}", flush=True)
-            return False
+import asyncio
+import edge_tts
+import langdetect
+from dotenv import load_dotenv
+import pygame
+from pygame import mixer
+
+# Initialize pygame mixer
+pygame.init()
+mixer.init()
+
+# Load environment variables
+load_dotenv()
 
 def record_audio(filename, duration=10):
     # Audio recording parameters
@@ -99,7 +71,7 @@ def clean_markdown(text):
     return cleaned
 
 def get_gemini_response(text):
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
     headers = {
         'Content-Type': 'application/json'
     }
@@ -110,8 +82,8 @@ def get_gemini_response(text):
         }]
     }
     
-    # Add API key to URL
-    api_key = "AIzaSyBC4sgfsVbiJ01HMkrhe97kHKXWnaVUeAg"
+    # Get API key from environment variable
+    api_key = os.getenv('GEMINI_API_KEY')
     url = f"{url}?key={api_key}"
     
     max_retries = 3
@@ -151,19 +123,54 @@ def get_gemini_response(text):
     
     return "I apologize, but I'm having trouble generating a response. Please try again."
 
-def initialize_tts():
-    engine = pyttsx3.init()
-    # Set properties (optional)
-    engine.setProperty('rate', 150)    # Speed of speech
-    engine.setProperty('volume', 1.0)  # Volume (0.0 to 1.0)
-    return engine
+async def speak_text(text):
+    try:
+        # Detect the language
+        lang = detect_language(text)
+        print(f"\nDetected language: {lang}")
+        
+        # Map language codes to Edge TTS voices
+        voice_map = {
+            'en': 'en-US-ChristopherNeural',
+            'fr': 'fr-FR-HenriNeural',
+            'es': 'es-ES-AlvaroNeural',
+            'de': 'de-DE-ConradNeural',
+            'ar': 'ar-SA-HamedNeural'
+        }
+        
+        # Get voice for detected language, default to English
+        voice = voice_map.get(lang, 'en-US-ChristopherNeural')
+        
+        # Create output filename
+        output_file = "temp_speech.mp3"
+        
+        print("Generating speech...")
+        communicate = edge_tts.Communicate(text, voice)
+        await communicate.save(output_file)
+        
+        # Play the audio using pygame
+        print("Speaking response...")
+        mixer.music.load(output_file)
+        mixer.music.play()
+        
+        # Wait for the audio to finish
+        while mixer.music.get_busy():
+            time.sleep(0.1)
+            
+        # Clean up
+        mixer.music.unload()
+        os.remove(output_file)
+        print("Finished speaking")
+        
+    except Exception as e:
+        print(f"TTS Error: {str(e)}")
 
 def detect_language(text):
     try:
         # Detect language of the text
         lang = langdetect.detect(text)
         
-        # Map detected language to gTTS supported codes
+        # Map detected language to supported codes
         lang_map = {
             'ar': 'ar',  # Arabic
             'en': 'en',  # English
@@ -175,33 +182,6 @@ def detect_language(text):
         return lang_map.get(lang, 'en')  # Default to English if language not in map
     except:
         return 'en'  # Default to English if detection fails
-
-def speak_text(text):
-    try:
-        # Detect the language
-        lang = detect_language(text)
-        print(f"\nDetected language: {lang}")
-        
-        # Create temporary audio file
-        temp_file = "temp_speech.mp3"
-        
-        print("Generating speech...")
-        # Convert text to speech
-        tts = gTTS(text=text, lang=lang, slow=False)
-        
-        # Save to temporary file
-        tts.save(temp_file)
-        
-        # Play the audio
-        print("Speaking response...")
-        playsound.playsound(temp_file)
-        
-        # Clean up
-        os.remove(temp_file)
-        print("Finished speaking")
-        
-    except Exception as e:
-        print(f"TTS Error: {str(e)}")
 
 def main():
     # Load the Whisper model
@@ -236,8 +216,8 @@ def main():
         gemini_response = get_gemini_response(full_text)
         response_time = time.time() - response_start
         
-        # Speak the response
-        speak_text(gemini_response)
+        # Speak the response using Edge TTS
+        asyncio.run(speak_text(gemini_response))
         
         print(f"\n\nProcessing times:")
         print(f"- Transcription: {transcription_time:.2f} seconds")
